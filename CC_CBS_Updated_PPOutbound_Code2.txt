@@ -1,0 +1,1614 @@
+
+
+/*
+.
+
+Code begins with 3 date macros which are referenced in the code
+
+1.  &rundate_end. 
+this is the last day of the desired month that you want the payment performance file
+	to refer to
+
+2. &rundate_start. this is the fist day of the desired month that you want the payment performance file
+	to refer to
+
+3. &filemonth. this is the year and month that the file runs up to and is used to name the file
+
+
+*/
+
+/*Access to LML Directory:*/
+
+libname lml '/sas/data/debt_anal/credit_risk/team_work/chestec1';
+libname shemarr "/sas/data/brite/Insight/shemarr";
+LIBNAME BGB       '/sas/data/brite1/bgb_portfolio/';
+Libname riskdata  "/sas/data/brite/Risk/Risk_Data";
+
+%let i=1;
+/*Change the -1, so -1 one month back -2 2 etc etc */
+%let rundate_end=%sysfunc(putn(%sysfunc(intnx(month, %sysfunc(today()), -&i,e)),date9.));
+%let rundate_start=%sysfunc(putn(%sysfunc(intnx(month, %sysfunc(today()),-&i,b)),date9.));
+
+
+data _null_;
+call symput ("rundate_start_comp",put(intnx("month","&rundate_start."d,-12,"begin"),date9.));
+run;
+
+data _null_;
+call symput ("rundate_final",put(intnx("month","&rundate_start."d,-12,"end"),date9.));
+run;
+
+
+
+
+
+/*The below should resolve to the last day of the previous month*/
+%put &rundate_end.;
+
+/*Finalisation date within the last year of run date*/
+%put &rundate_final.;
+
+/*The below should resolve to the 1st day of the desired month*/
+%put &rundate_start.;
+
+/*The below should resolve to the 1st day of the desired month minus one year for complaints*/
+%put &rundate_start_comp.;
+
+
+/*Macro to set date as 1 month previous*/
+data _null_;
+call symput ("filemonth",put(intnx("month",today(),-&i.,"begin"),yymmn6.));
+call symput ("expfilemonth",put(intnx("month",today(),-&i.,"begin"),mmyyn4.));
+run;
+%put &filemonth.; 
+%put &expfilemonth.; 
+
+
+
+
+
+/*----------------------------------------------------------------------------------------------------------------*/
+data test1 test2;
+
+set bgb.bgb_portfolio_current_month/*(where=(month_ending="&rundate_end."d))*/;
+
+format     Amount_1to30 12.2 
+           Amount_31to60 12.2 
+           Amount_61to90 12.2 
+           Amount_91plus 12.2 
+
+           BillingSystem $3.
+           payment_methodA $4.
+           accountstatus1 $1. 
+           Contract_Type $20.;
+/* Does amount refer to outstanding balance here?*/
+
+Amount_1to30 = round(sum(Month_0, Month_1,0.00),.01); /* we'are taking sum of  amount/outstanding balance to categorize this in 4 cateogires..*/
+Amount_31to60 = round(sum(Month_2,0.00),.01);
+Amount_61to90 = round(sum(Month_3,0.00),.01);
+Amount_91plus = round(sum(month_4, month_5, month_6, month_7, month_8, month_9, month_10, 
+month_11, month_12,0.00),.01);
+
+if source = 'SLI' then BillingSystem = 'SBB';
+else  billingsystem= source;
+
+if payment_method2 = 'CC' then payment_methodA = 'VADD';
+else payment_methodA = 'UNK';
+
+/*  Definition of aforementioned catogries
+SLI-
+SBB-
+MU--
+ MS-
+UNK-
+TBA-
+*/
+if account_type = 'MU' then account_type = 'MS';
+else if account_type = 'TBA' then account_type = 'UNK';
+else account_type = account_type;
+
+if account_status = 'FINAL' and (date_finalised > "&rundate_end."d) 
+then account_status = 'LIVE';
+
+if account_status = 'LIVE' then accountstatus1 = 'L';
+else if account_status = 'FINAL' then accountstatus1 = 'F';
+
+if account_status = 'LIVE' and account_no >600000000
+then  output test1; 
+if account_status = 'FINAL' AND balance <> 0 and (date_finalised >= "&rundate_final."d+1 and 
+                                            date_finalised <="&rundate_end."d) 
+then output test1;
+else output test2;
+run;
+
+
+proc freq data= test1;
+table account_type/missing;
+run;
+
+/*check to ensure correct final accounts*/
+proc sql;
+create table test88 as
+select * 
+from work.test1			
+where account_status = 'FINAL'
+order by date_finalised;
+quit;
+
+
+/*Select the specific variables from test 1 dataset */
+
+proc sql;
+	create table go as
+	select account_no,
+		   balance,
+		   Amount_1to30,
+		   Amount_31to60,
+		   Amount_61to90,
+		   Amount_91plus,
+		   accountstatus1 as AccountStatus,
+		   CONTRACT_TYPE,
+		   BillingSystem,
+		   payment_methodA as Paymentmethod,
+		   ACCOUNT_TYPE as Segment,
+		   '' as HRU
+		   '' as ECS,
+		   '' as CAIS,
+		   '' as MPAgentname
+		   '' as NONLTDID,
+		   '' as LTDID
+	from work.test1
+	where account_no <670000000 /*added 07/11/17 remove collective and security deposits from PP file*/
+	order by account_no asc;
+quit;
+
+
+
+
+/*----------------------------------------------------------------------------------------------------------------*/
+
+/*
+
+All the following types of accounts have been located from the portfolio view:-
+
+1. All live
+2. Final with non Zero balace
+3. Final with zero balance and final within the last 6 months 
+
+
+----------------------------------------------------------------------------------------------------------------
+
+With the subset of accounts to report on the address data is now added
+
+*/
+
+/*-------------------------------------------------------------------------------------*/
+data t10 (keep=account_id source_system_account_num);
+set pdm_acb.customer_account;
+where Is_Current_Flg = 1 and Record_Deleted_Flg = 0;
+run;
+
+data t1;
+set t10;
+source_system_account_num1 = input(source_system_account_num, 16.);
+drop source_system_account_num;
+rename source_system_account_num1=source_system_account_num;
+run;
+
+proc sql;
+create table t2 as
+select a.*,
+		b.*
+from t1 a inner join go b
+on a.source_system_account_num=b.account_no;
+quit;
+
+PROC SQL;
+CREATE TABLE ADDRESS_DETAILS AS
+SELECT 
+ACC.ACCOUNT_NO
+,CASE 
+WHEN PAR.PARTY_ACCOUNT_ROLE_TYPE_CD = 'GPART' THEN 1
+ELSE 2
+END AS ACCOUNT_NAME_ORDER
+,SA.ADDRESS_USAGE_CD
+,SA.EFFECTIVE_START_DT
+,SA.SOURCE_SYSTEM_ADDRESS_NUM
+,SA.BUILDING_NAME
+,SA.HOUSE_NUM
+,SA.STREET_NAME1
+,SA.STREET_NAME2
+,SA.LOCAL_AREA_NAME
+,SA.CITY
+,SA.DISTRICT
+,SA.POST_CODE
+FROM t2 ACC
+LEFT JOIN            (SELECT DISTINCT           PARTY_ID
+                                                           ,ACCOUNT_ID
+                                                          ,PARTY_ACCOUNT_ROLE_TYPE_CD
+                           FROM                       PDM_ACB.PARTY_ACCOUNT_ROLE                 
+                           WHERE                           IS_CURRENT_FLG = 1) PAR  ON ACC.ACCOUNT_ID=PAR.ACCOUNT_ID
+LEFT JOIN            (SELECT DISTINCT           PARTY_ID
+                                                           ,ADDRESS_USAGE_CD
+														   ,EFFECTIVE_START_DT
+														   ,SOURCE_SYSTEM_ADDRESS_NUM
+                                                           ,BUILDING_NAME
+                                                           ,HOUSE_NUM
+                                                           ,STREET_NAME1
+                                                           ,STREET_NAME2
+                                                           ,LOCAL_AREA_NAME
+                                                           ,CITY
+                                                           ,DISTRICT
+                                                           ,POST_CODE
+                           FROM                       PDM_ADC.PARTY_ADDRESS
+                           WHERE                           IS_CURRENT_FLG = 1					
+                           AND                        ADDRESS_USAGE_CD = 'XXDEFAULT') SA ON PAR.PARTY_ID=SA.PARTY_ID
+;QUIT;
+proc sql;
+create table Add_Dedupe
+as select *
+from ADDRESS_DETAILS
+group by Account_No
+having effective_start_dt = max (effective_start_dt);
+quit;
+
+proc sql;
+create table ADDRESS_DETAILS1
+as select *
+from Add_Dedupe
+group by Account_No
+having Source_System_Address_Num  = max(Source_System_Address_Num);
+quit;
+
+PROC SORT DATA=ADDRESS_DETAILS1 NODUPRECS;
+BY ACCOUNT_NO ACCOUNT_NAME_ORDER DESCENDING POST_CODE;
+RUN;
+DATA ADDRESS_DETAILS_01;
+SET ADDRESS_DETAILS1;
+BY ACCOUNT_NO ACCOUNT_NAME_ORDER DESCENDING POST_CODE;
+IF FIRST.ACCOUNT_NO THEN OUTPUT;
+DROP ADDRESS_USAGE_CD;
+RUN;
+
+PROC SQL;
+CREATE TABLE ADDRESS_DETAILS_02 AS
+SELECT t1.*, propcase(t2.account_name) as CustomerName,
+    LEFT(trim(t1.Building_name) || ' ' || t1.House_Num)  as CustomerStreet1,
+    LEFT(trim(t1.Street_name1) || ' ' || t1.Street_name2) as CustomerStreet2,
+    LEFT(trim(t1.Local_area_name) || ' ' || t1.City) as CustomerTown1,
+	t1.Post_code as CustomerPostCode,
+	t1.District as CustomerCounty
+	from ADDRESS_DETAILS_01 t1
+	left join bgb.bgb_tenancies t2
+	on t1.account_no = t2.account_no;
+quit;
+
+proc sql;
+	create table ADDRESS_DETAILS_03 as
+	select distinct t1.account_no, t1.CustomerName,
+		   left(trim(propcase(t1.CustomerStreet1)) || ' ' || propcase(t1.CustomerStreet2)) as CustomerStreet,
+		   left(trim(propcase(t1.CustomerTown1))) as CustomerTown,
+		   right(trim(t1.CustomerPostCode)) as CustomerPostCode,
+		   right(trim(propcase(t1.CustomerCounty))) as CustomerCounty
+	from ADDRESS_DETAILS_02 t1;
+quit;
+
+/*Improve quality of county variable as nearly all blank
+  data used is a uk postcode and area dataset in lml lib
+*/
+
+proc sql;
+	create table county1 as
+	select account_no, substr(customerpostcode,1,2) as pc
+	from ADDRESS_DETAILS_03;
+quit;
+
+		  
+data county2;
+set county1;
+pc=left(trim(compress(pc,'','d'))) ;
+run;
+
+proc sql;
+	create table county3 as
+	select t1.account_no, t1.pc, t2.County_Zone
+	from work.county2 t1
+	left join lml.uk_outcodes_regions t2
+	on t1.pc = t2.outcode;
+run;
+
+
+		
+proc sql;
+	create table address3 /*main dataset of accounts with addresses*/ as
+	select t1.account_no, t1.CustomerName, t1.CustomerStreet, t1.CustomerTown,
+	       t1.CustomerPostCode, t2.county_zone as CustomerCounty
+	from ADDRESS_DETAILS_03 t1
+	left join work.county3 t2
+	on t1.account_no = t2.account_no;
+quit;
+/*
+
+Next section of code helps populate accounts with no address at account level,
+contract address was originally used however offered no more address, so therefore
+used the site address
+
+*/
+
+proc sql;
+ 	create table missing_add1 as
+	select t1.account_no, t1.customername, t1.CustomerStreet, t1.CustomerTown, t1.CustomerPostcode, t1.CustomerCounty
+	from work.address3 t1
+	where t1.CustomerStreet is null 
+		  and t1.CustomerTown is null 
+	      and t1.CustomerPostCode is null 
+		  and t1.CustomerCounty is null;
+quit;
+
+/*Dataset of accounts with correct addresses created to append on the found addresses later on */
+Proc sql;
+	create table have_add as
+	select t1.*
+	from work.address3 t1
+	where t1.account_no not in (select t2.account_no from missing_add1 t2);
+quit;
+
+/*--------------------------------------------------------------------------------------*/
+
+proc sql;
+	create table missing_add2 as
+	select t1.account_no, t1.Customername, 
+	t2.Site_Building_Num, t2.Site_Building_Nam,
+	t2.Site_Sub_Building_Nam,
+	t2.Site_Address_line1,
+	t2.Site_Address_line2,
+	t2.Site_Address_line3,
+	t2.Site_Address_line4,
+	t2.Site_Address_line5,
+	t2.Site_Address_line6,
+	t2.Site_Address_line7,
+	t2.Site_Principal_Street_Desc,
+	t2.Site_Post_Town,
+	t2.Site_Dependant_Locality_Desc,
+	t2.Site_County_Desc,
+	t2.Site_Site_Postcode
+	from work.missing_add1 t1
+	left join bgb.bgb_tenancies t2
+	on t1.account_no = t2.account_no;
+quit;
+
+
+proc sql;
+	create table missing_add3 as
+	select t1.account_no, t1.Customername, 
+	(cats(t2.Site_Building_Num,'_', t2.Site_Building_Nam)) as CustomerStreet1,
+	(cats(t2.Site_Address_line1,'_', t2.Site_Address_line2, '_' ,t2.Site_Principal_Street_Desc )) as CustomerStreet2,
+	t2.Site_Post_Town as CustomerTown1,
+	t2.Site_County_Desc as CustomerCounty,
+	t2.Site_Site_Postcode as CustomerPostCode
+	from work.missing_add1 t1
+	left join bgb.bgb_tenancies t2
+	on t1.account_no = t2.account_no;
+quit;
+
+
+
+
+
+
+
+
+
+data work.missing_add4 (drop=CustomerStreeta CustomerStreet1 CustomerStreet2 CustomerStreetz
+							 CustomerTown1);
+	set work.missing_add3;
+	CustomerStreeta=compress(CustomerStreet1,'0','');
+	CustomerStreet2=propcase(compress(CustomerStreet2,'_',' '));
+	CustomerTown=propcase(CustomerTown1);
+	CustomerCounty=propcase(CustomerCounty);
+	CustomerStreet1=propcase(Compress(Customerstreeta,'_',' '));
+	CustomerStreetz = cats(CustomerStreet1,'_', CustomerStreet2);
+	CustomerStreet = trim(left(translate(CustomerStreetz,' ','_')));
+run;
+
+
+proc sql;
+	create table work.missing_add5 as
+	select account_no, customername, CustomerStreet,
+		   CustomerTown, CustomerPostCode, CustomerCounty
+	from work.missing_add4;
+quit;
+
+
+/*Code now puts all the accounts together with address data the main addresses 
+	are from dataset work.have_add and the accounts with mising address data come from 
+	missing_add5*/
+
+proc sql;
+	create table work.completeaddress as
+	select t1.* from work.have_add t1
+	union 
+	select t2.* from work.missing_add5 t2;
+quit;
+ 
+
+/*NEED TO SELECT 1ST INSTANCE OF COMPLETE ADDRESS TABLE TO GET TO same number of records as per step 1*/
+data completeaddress1;
+	set work.completeaddress;
+	by account_no;
+	if first.account_no then output completeaddress1;
+run;
+
+
+
+/*This section appends the original debt data with the address data located*/
+
+proc sql;
+	create table set1 as
+	select t1.*, t2.*
+	from work.go t1
+	left join work.completeaddress1 t2
+	on t1.account_no = t2.account_no;
+quit;
+
+
+/*----------------------------------------------------------------------------------------------------------------*/
+
+
+/*Source main telephone number for accounts this is taken from the PDM directly 
+as not in the Portfolio views*/
+
+
+
+
+/*pt1*/
+Proc sql;
+Create table tele1  as
+Select distinct t1.account_no, ca.account_id
+from work.go t1
+left join PDM_ACB.Customer_Account ca 
+on t1.Account_no = input(ca.Source_System_Account_num, 14.) and ca.Is_current_Flg = 1
+;quit;
+
+/*pt2*/
+
+Proc sql;
+Create table tele2  as
+Select distinct t1.account_no, t1.account_id, par.Party_id, par.Party_Account_Role_Type_Cd
+from work.tele1 t1
+left join PDM_AcB.Party_Account_role par 
+on t1.account_id = par.account_id and par.is_current_flg = 1
+;quit;
+
+/*pt3*/
+
+Proc sql;
+Create table  tele3  as
+Select distinct t1.account_no, t1.account_id, p.Party_id
+from work.tele2 t1
+left join PDM_PB.Party__Backbone p 
+on t1.Party_id = p.party_id and t1.Party_Account_Role_Type_Cd = 'GPART' and p.is_current_flg = 1
+;quit;
+
+
+/*pt4*/
+
+Proc sql;
+Create table tele4   as
+Select distinct t1.account_no, t1.account_id, t1.party_id, pta.Telephone_id
+from work.tele3 t1
+left join PDM_ADC.PARTY_TELEPHONE_ADDRESS pta
+on t1.party_id = pta.Party_Id and pta.Is_Current_Flg = 1
+;quit;
+
+
+/*pt5a*/
+
+Proc sql;
+Create table tele5a   as
+select distinct t1.telephone_id,  t1.telephone_num, datepart(t1.effective_start_dt) as start_dt format date9. 
+from  PDM_ADC.TELEPHONE_NUMBER t1
+order by t1.telephone_id
+;quit;
+
+
+
+
+
+
+/*prt5b*/
+
+Proc sql;
+Create table tele5b as
+Select distinct t1.account_no,/*t1.telephone_id,*/ compress(t2.Telephone_num, ,'a') as CustomerTelephone, 
+		 t2.start_dt
+from work.tele4 t1
+left join work.tele5a t2
+on t1.Telephone_id = t2.telephone_id 
+	where t2.telephone_num is not null 
+	and t2.telephone_num not in (
+								 '0',
+								 '00',
+								 '000',
+								 '0000',
+								 '00000',
+								 '000000',
+								 '0000000',
+								 '00000000',
+								 '000000000',
+								 '0000000000',
+								 '00000000000'	
+								  )
+	and t2.telephone_num not contains('1111111')
+order by t1.account_no, t2.start_dt
+;quit;
+
+/*prt6*/
+
+Proc sql;
+Create table tele6   as
+Select distinct account_no, compress(customertelephone,' ','') as customertelephone, start_dt
+from work.tele5b
+where customertelephone is not null
+order by account_no, start_dt 
+/*group by account_no, customertelephone*/
+;quit;
+
+/*part 7 select last instance*/
+
+data work.tele7;
+set work.tele6;
+by account_no start_dt;		/*can start_dt be added here???????????*/
+if last.account_no then output work.tele7;
+run;
+
+
+
+
+
+
+
+
+
+
+/*Section where the accounts with telephone number are added to the main dateset*/
+
+
+
+proc sql;
+	create table work.set2 as
+	select t1.*, t2.CustomerTelephone
+	from work.set1 t1
+	left join work.tele7 t2
+	on t1.account_no = t2.account_no;
+quit; 
+	
+
+/*----------------------------------------------------------------------------------------------------------------*/
+
+
+/*Section of code identifies the renewal date from SAP SS*/
+
+PROC SQL;
+	CREATE TABLE work.Contract_dates1 AS
+	SELECT DISTINCT
+	INPUT(ACC.Source_System_Account_Num,best12.) AS ACCOUNT_NO format =best12.
+	,AI.ISU_CONTRACT_NUM
+	,datepart(AI.RENEWAL_DT) as Renewal_DT format= date9.
+	FROM PDM_AGCM.AGREEMENT_ITEM AI
+	JOIN PDM_ACB.CUSTOMER_ACCOUNT ACC ON AI.ACCOUNT_ID=ACC.ACCOUNT_ID
+	WHERE
+	AI.IS_CURRENT_FLG = 1
+	and ai.renewal_dt is not null
+	and year(ai.renewal_dt) <9999 
+	ORDER BY
+	ACC.Source_System_Account_Num
+	,AI.ISU_CONTRACT_NUM,
+	renewal_dt
+;QUIT;
+
+/* as the accounts are in order and by renewal date old to new selects the last 
+instance so any accounts with more than 1 renewal date the latest is taken*/
+
+data  contract_dates2 (drop=ISU_Contract_Num);
+	set contract_dates1;
+	by account_no; 
+	if last.account_no then output contract_dates2;
+run;
+
+
+
+/*The renewal dates are added to the Main dataset*/
+proc sql;
+	create table work.seta as
+	select t1.*, t2.renewal_dt as RenewalDate
+	from work.set2 t1
+	left join work.contract_dates2 t2
+	on t1.account_no = t2.account_no;
+quit; 
+
+/*Section of code manually determines between Live/Deemed and Out of Contract*/
+
+
+data work.set3 (drop=Contract_Type rename=(contract_type1 = Contract_Type));
+	set work.seta;
+	format contract_type1 $40.;
+	if RenewalDate =. then contract_type1 = contract_type;
+	else if contract_type = 'Contract' and (RenewalDate < today()) then contract_type1 = 'Out of contract';
+	else if contract_type in ('Deemed','.','') then contract_type1 = contract_type;
+	else  contract_type1 = contract_type;
+run;
+
+/*----------------------------------------------------------------------------------------------------------------*/
+
+/*Create provision variable for Experian to populate on return file*/
+
+data work.set4;
+	set work.set3;
+	format TotalProvision 12.;
+	TotalProvision = '';
+run;
+
+
+/*----------------------------------------------------------------------------------------------------------------*/
+
+/*
+Part 5 - New code to indentify if there are any accounts with open complaints during the period the file is ran for
+*/
+
+/*
+Section of code gets all the BP numbers and their associated contract account numbers and account id's
+this is used later in the code when appending the complaints
+*/
+
+
+/*Extract all compalint events within specific file date periods*/
+
+Proc sql;
+Create table comp01   as
+Select distinct  Service_Request_Event_Id, Src_Sys_Event_Num, Recieve_Dt, 
+	   Closed_Dt, Svc_Req_Process_Type_Cd,  account_id
+from pdm_evcu.SERVICE_REQUEST_EVENT 
+WHERE			Svc_Req_Process_Type_Cd in
+ 						(
+						'CLRP',
+						'CM0C',
+						'CMDC',
+						'CMR',
+						'CRD',
+						'CRMC',
+						'TSC',
+						'Z105',
+						'Z601',
+						'Z701',
+						'ZC01',
+						'ZC02',
+						'ZC03',
+						'ZC04',
+						'ZSRC'
+						)
+
+
+and datepart (Recieve_Dt) <= "&rundate_end."d /*complaint received before time ending period*/
+and datepart(Recieve_Dt) > "01JAN1900"d /*received into business*/
+and is_current_flg = 1
+and (datepart(Closed_Dt) >= "&rundate_start_comp."d  or (datepart(Closed_Dt) = .)) /*Any closed complaint within time period*/
+order by   Recieve_Dt, Src_Sys_Event_Num
+;quit;
+
+
+
+
+
+/*Removes any compalints open and closed on the same day*/
+
+Proc sql;
+Create table comp01a   as
+Select *
+from work.comp01
+where datepart (closed_dt) =. or datepart(Recieve_Dt) < datepart (closed_dt) /*ensure complaint open more than 1 day*/
+;quit;
+
+/*check dates of min and max complaints*/
+Proc sql;
+Select datepart(max(recieve_dt)) as r1 format date9., datepart(min(recieve_dt)) as r2 format date9.,
+		datepart(min(closed_dt)) as c2 format date9.
+from work.comp01
+;quit;
+
+
+/*
+
+Join event_ids to the service_request_party id table to ensure the correct party id is used
+for when the complaint was raised
+
+*/
+
+
+Proc sql;
+Create table svc_req1   as
+Select t1.*, t2.*  /*.party_id, t2.effective_start_dt, t2.effective_end_dt*/
+from work.comp01a t1
+left join pdm_evcu.SERVICE_REQUEST_PARTY t2
+on t1.service_request_event_id = t2.service_request_event_id
+where t2.event_party_role_cd = 'SOLD_TO_PARTY'
+and t2.is_current_flg = 1
+/*and  t1.Recieve_Dt between t2.effective_start_dt and t2.effective_end_dt*/
+;quit;
+
+
+
+
+
+
+/*Create party reference table*/
+
+
+PROC SQL;
+CREATE TABLE party AS
+SELECT 
+T1.PARTY_ID
+,T1.PARTY_ACCOUNT_ROLE_TYPE_CD
+,T1.ACCOUNT_ID
+,INPUT(T2.Source_System_Account_Num, BEST12.) AS ACCOUNT_NO FORMAT=BEST12.
+,INPUT(T3.source_system_party_num, BEST12.) AS B_NO
+FROM PDM_ACB.PARTY_ACCOUNT_ROLE T1
+JOIN PDM_ACB.CUSTOMER_ACCOUNT T2 ON T1.ACCOUNT_ID=T2.ACCOUNT_ID
+JOIN PDM_PB.PARTY__BACKBONE T3 ON T1.PARTY_ID=T3.PARTY_ID
+WHERE T1.IS_CURRENT_FLG = 1
+AND T2.IS_CURRENT_FLG = 1
+AND T3.IS_CURRENT_FLG = 1
+and t1.Party_Account_Role_Type_Cd = 'GPART'
+;QUIT;
+
+
+/*Join the Party_ids from when the complaint was raised and determine BP_no's*/
+
+
+
+Proc sql;
+Create table comp03a  as
+Select distinct t1.*,  t2.b_no as bp_no
+from work.svc_req1 t1
+left join Party t2
+on t1.party_id = t2.party_id
+/*where t2.party_id = 9653686*/
+;quit;
+
+
+/*Join Bp_no's onto portfolio to get all contract accounts associated with BP's*/
+
+Proc sql;
+Create table comp_join_port   as
+Select distinct t1.bp_no, t2.account_no, 'Yes' as  complaint
+from work.comp03a t1
+left join bgb.bgb_portfolio_current_month t2
+on t1.bp_no = t2.bp_no
+where account_no >600000000
+order by account_no asc
+;quit;
+
+
+
+
+
+/* Append the the complaint accounts to the final outbound debt file*/
+
+
+proc sql;
+	create table set5  as
+	select t1.*, t2.complaint
+	from work.set4 t1
+	left join work.comp_join_port t2
+	on t1.account_no = t2.account_no;
+quit;
+
+
+/*copy to perm for testing*/
+
+DATA lml.set5;
+SET set5;
+RUN;
+
+
+/*ADDED 10-09-2018*/
+
+/*TEST TO VIEW PRIOR TO CREATION OF FILE HOW MANY CONTRACT 
+ACCOUNTS FALL INTO THE FOLLOWING CATEGORIES
+
+1.NAME BLANK AND ADDRESS BLANK 
+2.NAME PRESENT AND ADDRESS BLANK 
+3.NAME BLANK AND ADDRESS PRESENT 
+4.NAME PRESENT AND ADDRESSES LINE 1 OR 3 AND POSTCODE
+*/
+
+
+
+
+PROC SQL;
+CREATE TABLE address_breakdown_1 AS
+SELECT 	account_no
+		,balance
+		,Amount_1to30
+		,Amount_31to60
+		,Amount_61to90
+		,Amount_91plus
+		,AccountStatus
+		,BillingSystem
+		,Paymentmethod
+		,Segment
+		,ECS
+		,CAIS
+		,NONLTDID
+		,LTDID
+		,CustomerName
+		,CustomerStreet
+		,CustomerTown
+		,CustomerPostCode
+		,CustomerCounty
+		,customertelephone
+		,RenewalDate
+		,Contract_Type
+		,TotalProvision
+		,complaint
+		,case when (customername is null
+				AND customerstreet IS NULL
+				AND customertown IS NULL
+				AND customercounty IS NULL
+				AND customerpostcode IS NULL)
+			THEN 'ALL BLANK (NOT SENT)'
+/*		  when (customername is NOT null*/
+/*				AND customerstreet IS NULL*/
+/*				AND customertown IS NULL*/
+/*				AND customercounty IS NULL*/
+/*				AND customerpostcode IS NULL)*/
+/*			THEN 'ADDRESS NOT PRESENT (NOT SENT)' */
+/*Removed where name is present but address is blank, as we can still send name only - removed on 05.12.2018*/
+		  when (customername is null
+				AND customerstreet IS NOT NULL
+				AND customertown IS NOT NULL
+				AND customercounty IS NOT NULL
+				AND customerpostcode IS NOT NULL)
+			THEN 'NAME NOT PRESENT (NOT SENT)' 
+		  when (customername is not null
+				AND customerstreet IS  NULL
+				AND customertown IS NOT NULL
+				AND customerpostcode IS NOT NULL)
+			THEN 'NAME AND PART ADD PRESENT (SENT)' 
+
+
+else 'OK (SENT)' END AS test
+FROM lml.set5 
+order by account_no
+;QUIT;
+
+
+data address_breakdown_2;
+set address_breakdown_1;
+where test not = "NAME NOT PRESENT (NOT SENT)";
+run;
+
+
+/*review volumes of check */
+
+
+PROC SQL;
+CREATE TABLE BREAKDOWN1 AS
+SELECT test, count(account_no) AS volume
+FROM address_breakdown_2
+group by test
+ORDER BY volume desc
+;QUIT;
+
+/*
+select accounts to send to experian any account that falls into folowing
+categories are not included
+BLANK
+ADDRESS NOT PRESENT
+NAME NOT PRESENT
+
+*/
+
+PROC SQL;
+CREATE TABLE setadd  AS
+SELECT account_no
+		,balance
+		,Amount_1to30
+		,Amount_31to60
+		,Amount_61to90
+		,Amount_91plus
+		,AccountStatus
+		,BillingSystem
+		,Paymentmethod
+		,Segment
+		,ECS
+		,CAIS
+		,NONLTDID
+		,LTDID
+		,CustomerName
+		,CustomerStreet
+		,CustomerTown
+		,CustomerPostCode
+		,CustomerCounty
+		,customertelephone
+		,RenewalDate
+		,Contract_Type
+		,TotalProvision
+		,complaint
+FROM address_breakdown_2
+WHERE /*test <> 'ADDRESS NOT PRESENT (NOT SENT)'(Removed as reporting acounts with name only - 05.12.2018)*/ 
+	test <> 'NAME NOT PRESENT (NOT SENT)'
+	OR test <> 'ALL BLANK (NOT SENT)'
+;QUIT;
+
+
+/*----------------------------------------------------------------------------------------------------------------*/
+
+
+/*At this stage the dataset is ready finally colums are named, formatted and ordered to match the 
+	current outbound process
+
+Also there is a check to ensure all the original accounts identified is the same number in the final 
+outbound file*/
+
+
+proc sql;
+	create table BGB_CREDIT_TO_CRA_SAP_&filemonth. as
+	select t1.account_no as accountid,
+		   t1.CustomerName,
+		   t1.CustomerStreet,
+           t1.CustomerTown,
+           t1.CustomerPostCode,
+           t1.CustomerCounty,
+           t1.CustomerTelephone,
+		   t1.balance as TotalAmountOutstanding,
+		   t1.totalProvision,
+		   t1.Amount_1to30,
+		   t1.Amount_31to60,
+		   t1.Amount_61to90,
+		   t1.Amount_91plus,
+		   t1.BillingSystem,
+		   t1.AccountStatus,
+		   t1.contract_type as ContractStatus,
+		   t1.PaymentMethod,
+		   t1.segment,
+		   '' as MPAgentName,
+		   '' as HRU,
+     	   t1.ECS,
+		   t1.RenewalDate,
+		   t1.CAIS,
+		   t1.LtdID,
+		   t1.NonLtdID,
+		   t1.Complaint
+	from work.setadd t1
+	order by account_no;
+quit;
+/*Remove PP blocked accounts from the file submission - added 08/04/2019 by Raj Shemar*/
+proc sql;
+create table Q1 as
+select *
+from BGB_CREDIT_TO_CRA_SAP_&filemonth.
+where accountid not in (select input(account_number,12.) from riskdata.pp_block_list);
+quit;
+
+data lml.Q1;
+SET Q1;
+RUN;
+
+
+/* Add BG Lite Accounts*/
+
+/*remove duplicate transactions by ID*/
+proc sort data=shemarr.bgl_transactional_&filemonth. nodupkey out=x1;
+   by AccounttransactionID;
+quit;
+
+/*re-sort data*/
+proc sort data=x1 out=live_bill;
+   by descending accountid descending CreatedDate descending PaymentDate descending AccounttransactionID;
+quit;
+
+/*next few steps are required to turn credit values in '-' values
+where credit is already a '-' value this will be turned into a debit as is e.g. bounced payment*/
+
+
+/*pull all credit transactions*/
+proc sql;
+create table s1 as
+select t1.*
+from live_bill t1
+where t1.CreditAmount not is MISSING;
+quit;
+
+
+/*pull all debit transactions - this dataset will be used later to rejoin to credits*/
+proc sql;
+create table s2 as
+select t1.*
+from live_bill t1
+where t1.CreditAmount is MISSING;
+quit;
+
+/*this converts credit to debit*/
+PROC SQL;
+   CREATE TABLE s3 AS 
+   SELECT t1.*,
+            (t1.CreditAmount*-1) AS CreditAmount1
+      FROM s1 t1;
+QUIT;
+
+/*rename the new credit variable and drop the previous one */
+data s4 (rename= CreditAmount1 = CreditAmount);
+set s3;
+drop CreditAmount;
+run;
+
+/* merge back the credits with the debits*/
+data s5;
+set s4 s2;
+run;
+
+/* re-sort data*/
+proc sort data=s5 out=s6;
+by accountid descending CreatedDate descending PaymentDate descending AccounttransactionID;
+quit;
+
+/* re-order the variables*/
+data s7;
+retain Accountid Accounttransactionid CreatedDate PaymentDate CreditAmount DebitAmount PreviousBalance CurrentBalance TRansactionTypeUID BillStatusID Paymenttype PaymentMethodUID Description Days;
+set s6;
+run;
+
+/*Move the positive credits into the DebitAmount*/
+data s8;
+set s7;
+if CreditAmount > 0 then DebitAmount = CreditAmount;
+run;
+
+/*reset the positive credits to 0 as they have been moved across to debit value*/
+data s9;
+set s8;
+if CreditAmount > 0 then CreditAmount = 0;
+run;
+
+/*re-format the Created Date variable from date/time to date so DBT can be calculated correctly in next part*/
+data s99;
+set s9;
+CreatedDate = datepart(CreatedDate);
+format CreatedDate date9.;
+run;
+
+/*calculate the DBT for the transactions*/
+
+data s10 (drop=date1 date2);
+set s99;
+   date1=createddate;
+   date2="&rundate_end."d;
+   days=(date2-date1);
+run;
+
+/*re-sort data*/
+proc sort data=s10 out=BGLPP_Sort;
+     by accountid descending CreatedDate descending PaymentDate AccounttransactionID;
+quit;
+
+
+/*put debits into aged debt buckets according to the DBT value*/
+data p9;
+set s10;
+if days <= 30 then DebAmount_1to30 = debitamount;
+else if days >= 31 and days <= 60 then DebAmount_31to60 = debitamount;
+else if days >= 61 and days <= 90 then DebAmount_61to90 = debitamount;
+else DebAmount_91plus = debitamount;
+run;
+
+/*sum up debits for each debt bucket*/
+proc sql;
+create table p10 as
+select 
+       *,
+       sum(DebAmount_1to30) as TotalDebAmount_1to30,
+	   sum(DebAmount_31to60) as TotalDebAmount_31to60,
+sum(DebAmount_61to90) as TotalDebAmount_61to90,
+sum(DebAmount_91plus) as TotalDebAmount_91plus
+from p9
+group by accountid;
+quit;
+
+/*re-sort data*/
+proc sort data=p10 out=p12;
+by accountid descending CreatedDate descending PaymentDate descending AccounttransactionID;
+quit;
+
+
+/* put credits into aged debt buckets*/
+data b1;
+set p12;
+if days <= 30 then CredAmount_1to30 = creditamount;
+else if days >= 31 and days <= 60 then CredAmount_31to60 = creditamount;
+else if days >= 61 and days <= 90 then CredAmount_61to90 = creditamount;
+else if days >= 91 then CredAmount_91plus = creditamount;
+run;
+
+/*sum up credits for each debt bucket*/
+proc sql;
+create table b2 as
+select 
+       *,
+       sum(CredAmount_1to30) as TotalCredAmount_1to30,
+	   sum(CredAmount_31to60) as TotalCredAmount_31to60,
+sum(CredAmount_61to90) as TotalCredAmount_61to90,
+sum(CredAmount_91plus) as TotalCredAmount_91plus
+from b1
+group by accountid;
+quit;
+
+/*remove extra variables*/
+data b3;
+set b2;
+drop CredAmount_1to30 CredAmount_31to60 CredAmount_61to90 CredAmount_91plus DebAmount_1to30 DebAmount_31to60 DebAmount_61to90 DebAmount_91plus;
+run;
+
+/*re-sort the data*/
+proc sort data=b3 out=b4;
+by accountid descending CreatedDate descending PaymentDate descending AccounttransactionID;
+quit;
+
+/*sum up and total the credits and drop extra variables*/
+data g0 (drop= CredAmount_1to30 CredAmount_31to60 CredAmount_61to90 CredAmount_91plus TotalCredAmount_1to30 TotalCredAmount_31to60 TotalCredAmount_61to90 TotalCredAmount_91plus accountid2);
+set b4;
+CredBalance = (sum(TotalCredAmount_1to30, TotalCredAmount_31to60, TotalCredAmount_61to90, TotalCredAmount_91plus));
+run;
+
+/*fill in the blank spaces with 0 value to avoid formula issues later*/
+data g1;
+set g0;
+if CredBalance = '.' then CredBalance = 0;
+else CredBalance = CredBalance;
+if TotalDebAmount_1to30 = '.' then TotalDebAmount_1to30 = 0;
+else TotalDebAmount_1to30 = TotalDebAmount_1to30;
+if TotalDebAmount_31to60 = '.' then TotalDebAmount_31to60 = 0;
+else TotalDebAmount_31to60 = TotalDebAmount_31to60;
+if TotalDebAmount_61to90 = '.' then TotalDebAmount_61to90 = 0;
+else TotalDebAmount_61to90 = TotalDebAmount_61to90;
+if TotalDebAmount_91plus = '.' then TotalDebAmount_91plus  = 0;
+else TotalDebAmount_91plus  = TotalDebAmount_91plus;
+run;
+
+/*subtract total credit against oldest debt bucket*/
+data g2;
+set g1;
+if TotalDebAmount_91plus > 0 then NewAmount_91plus = sum(TotalDebAmount_91plus + CredBalance);
+if NewAmount_91plus ='' then NewAmount_91plus = 0;
+run;
+
+/*if any credit left then this becomes the new Total Credit Balance, otherwise it becomes £0 as no more credit left*/
+data g3;
+set g2;
+if NewAmount_91plus < 0 then CredBalance = NewAmount_91plus;
+else CredBalance = sum(CredBalance + TotalDebAmount_91plus);
+if CredBalance > 0 then CredBalance = 0;
+run;
+
+/*if the new aged debt bucket balance is in credit after being offset in previous step, reset the bucket total to £0*/
+data g4;
+set g3;
+if CredBalance < 0 then NewAmount_91plus = 0;
+else NewAmount_91plus = NewAmount_91plus;
+run;
+
+/*subtract any remaining credit against the next debt bucket*/
+data g5;
+set g4;
+if TotalDebAmount_61to90 > 0 then NewAmount_61to90 = sum(TotalDebAmount_61to90 + CredBalance);
+if NewAmount_61to90 ='' then NewAmount_61to90 = 0;
+run;
+
+/*if any credit left then this becomes the new Total Credit Balance, otherwise it becomes £0 as no more credit left*/
+data g6;
+set g5;
+if NewAmount_61to90 < 0 then CredBalance = NewAmount_61to90;
+else CredBalance = sum(CredBalance + TotalDebAmount_61to90);
+if CredBalance > 0 then CredBalance = 0;
+run;
+
+/*if the new aged debt bucket balance is in credit after being offset in previous step, reset the bucket total to £0*/
+data g7;
+set g6;
+if CredBalance < 0 then NewAmount_61to90 = 0;
+else NewAmount_61to90 = NewAmount_61to90;
+run;
+
+/*subtract any remaining credit against the next debt bucket*/
+data g8;
+set g7;
+if TotalDebAmount_31to60 > 0 then NewAmount_31to60 = sum(TotalDebAmount_31to60 + CredBalance);
+if NewAmount_31to60 ='' then NewAmount_31to60 = 0;
+run;
+
+/*if any credit left then this becomes the new Total Credit Balance, otherwise it becomes £0 as no more credit left*/
+data g9;
+set g8;
+if NewAmount_31to60 < 0 then CredBalance = NewAmount_31to60;
+else CredBalance = sum(CredBalance + TotalDebAmount_31to60);
+if CredBalance > 0 then CredBalance = 0;
+run;
+
+/*if the new aged debt bucket balance is in credit after being offset in previous step, reset the bucket total to £0*/
+data g10;
+set g9;
+if CredBalance < 0 then NewAmount_31to60 = 0;
+else NewAmount_31to60 = NewAmount_31to60;
+run;
+
+
+/*subtract any remaining credit against the next debt bucket*/
+data g11;
+set g10;
+if TotalDebAmount_1to30 > 0 then NewAmount_1to30 = sum(TotalDebAmount_1to30 + CredBalance);
+if NewAmount_1to30 ='' then NewAmount_1to30 = 0;
+run;
+
+/*if any credit left then this becomes the new Total Credit Balance, otherwise it becomes £0 as no more credit left*/
+data g12;
+set g11;
+if NewAmount_1to30 < 0 then CredBalance = NewAmount_1to30;
+else CredBalance = sum(CredBalance + TotalDebAmount_1to30);
+if CredBalance > 0 then CredBalance = 0;
+run;
+
+/*if there is credit left in the Cred Balance total then this should = the 1-30 bucket*/
+data g13;
+set g12;
+if CredBalance < 0 then NewAmount_1to30 = CredBalance;
+else NewAmount_1to30 = NewAmount_1to30;
+run;
+
+/*drop extra variables*/
+data n1;
+set g13;
+drop TotalDebAmount_1to30 TotalDebAmount_31to60 TotalDebAmount_61to90 TotalDebAmount_91plus CredBalance Balance;
+run;
+
+/*re-order variables*/
+data n2;
+retain Accountid Accounttransactionid CreatedDate PaymentDate CreditAmount DebitAmount PreviousBalance CurrentBalance TRansactionTypeUID BillStatusID Paymenttype PaymentMethodUID Description NewAmount_1to30 NewAmount_31to60 NewAmount_61to90 NewAmount_91plus;
+set n1;
+run;
+
+/*re-name variables*/
+data n3;
+set n2;
+rename NewAmount_1to30 = Amount_1to30 NewAmount_31to60 = Amount_31to60 NewAmount_61to90 = Amount_61to90 NewAmount_91plus = Amount_91plus;
+run;
+
+/*round off amounts to two decimal points*/
+data n4;
+set n3;
+Amount_1to30 = round(Amount_1to30,0.01);
+Amount_31to60 = round(Amount_31to60,0.01);
+Amount_61to90 = round(Amount_61to90,0.01);
+Amount_91plus = round(Amount_91plus,0.01);
+run;
+
+/*calculate balance across aged debt buckets for validation*/
+data n5;
+set n4;
+Balance = (sum(Amount_1to30, Amount_31to60, Amount_61to90, Amount_91plus));
+run;
+
+/*re-sort data*/
+proc sort data=n5 out=n6;
+   by descending accountid descending AccounttransactionID;
+quit;
+
+/*remove duplicates*/
+proc sort data=n6 nodupkey out=MasterP;
+by accountid;
+quit;
+
+
+/*ADDING NAME ADDRESS AND EXTRA VARIABLES BEFORE MERGING WITH BAU FILE*/
+
+/*Re-format the variables from the BGL file (concat the address fields)*/
+data Z1;
+set SHEMARR.DIMBGLITE_&filemonth.;
+format CustomerStreet $300.;
+format CustomerStreet1 $300.;
+format SupplyEndDate date9.;
+format AssosciationEndDate date9.;
+format DeemedStartDate date9.;
+format DeemedEndDate date9.;
+CustomerStreet=strip((strip(MeterAddressLine1))||''||(strip(MeterAddressLine2))||''||(strip(MeterAddressLine3)));
+CustomerStreet1=strip((strip(AccountAddressLine1))||''||(strip(AccountAddressLine2))||''||(strip(AccountAddressLine3)));
+run;
+
+/*add zero transaction accounts*/
+
+proc sort data=shemarr.bgl_transactional_&filemonth. nodupkey out=xp1;
+   by Accountid;
+quit;
+
+proc sort data=shemarr.DIMBGLITE_&filemonth. nodupkey out=xp2;
+   by Accountid;
+quit;
+
+data rp1;
+set xp2;
+where AccountStatus = 'Live';
+run;
+
+proc sql;
+create table rp2 as
+select t1.*,
+	t2.accountid as accountid2
+from rp1 t1
+left join xp1 t2 on (t1.AccountId = t2.Accountid);
+QUIT;
+
+data rp3 (keep= Accountid Balance Amount_1to30 Amount_31to60 Amount_61to90 Amount_91plus);
+set rp2;
+where accountid2 is null;
+Balance = 0.00;
+Amount_1to30 = 0.00;
+Amount_31to60 = 0.00;
+Amount_61to90 = 0.00;
+Amount_91plus =0.00;
+run;
+
+data masterp2;
+set rp3 masterp;
+run;
+
+
+/*join the re-formatted BGL variables to the aged debt buckets file*/
+PROC SQL;
+CREATE TABLE Z2 AS
+SELECT t1.Accountid,
+t2.BusinessName as CustomerName,
+t2.CustomerStreet,
+t2.MeterTown as CustomerTown,
+t2.MeterPostcode as CustomerPostCode,
+t2.MeterCounty as CustomerCounty,
+t1.Balance as TotalAmountOutstanding,
+t1.Amount_1to30,
+t1.Amount_31to60,
+t1.Amount_61to90,
+t1.Amount_91plus,
+t2.AccountStatus,
+t2.SupplyEndDate,
+t2.DeemedStartDate,
+t2.DeemedEndDate,
+t2.CustomerStreet1,
+t2.AccountTown,
+t2.AccountCounty,
+t2.AccountPostCode
+FROM MASTERP2 t1
+LEFT JOIN Z1 t2 ON (t1.Accountid = t2.AccountId);
+QUIT;
+
+data zp2;
+set z2;
+format CustomerTown $40.;
+run;
+
+data zp3 (drop= CustomerStreet1 AccountTown AccountCounty AccountPostCode);
+set z2;
+if CustomerStreet < 0 then CustomerStreet=CustomerStreet1;
+else CustomerStreet = CustomerStreet;
+if CustomerTown < 0 then CustomerTown=AccountTown;
+else CustomerTown = CustomerTown;
+if CustomerCounty < 0 then CustomerCounty=AccountCounty;
+else CustomerCounty = CustomerCounty;
+if CustomerPostCode < 0 then CustomerPostCode=AccountPostCode;
+else CustomerPostCode = CustomerPostCode;
+run; 
+
+
+/*add contract status for Deemed/Contract depending on Deemed Start/End date*/
+data z3;
+format ContractStatus $40.;
+set zp3;
+if DeemedStartDate > 0 and DeemedEndDate= '.' then DeemedEndDate = '31dec9998'd;
+if DeemedStartDate > 0 and DeemedEndDate >= "&rundate_start."d then ContractStatus = 'Deemed';
+else ContractStatus = 'Contract';
+run;
+
+/*add in extra variables which exist in BAU file*/
+data z4 (drop=DeemedStartDate DeemedEndDate);
+retain Accountid CustomerName CustomerStreet CustomerTown CustomerPostCode CustomerCounty customertelephone TotalAmountOutstanding TotalProvision Amount_1to30 Amount_31to60 Amount_61to90 Amount_91plus BillingSystem AccountStatus ContractStatus PaymentMethod Segment MPAgentName HRU ECS RenewalDate CAIS LTDID NONLTDID SupplyEndDate;
+set z3;
+format customertelephone $30.;
+format TotalProvision 8.2;
+format MPAgentName $1.;
+format HRU $1.;
+format ECS $1.;
+format CAIS $1.;
+format LTDID $1.;
+format NONLTDID $1.;
+Paymentmethod = 'VADD';
+BillingSystem = 'ENS';
+Segment = 'BL';
+if AccountStatus = 'Live' then AccountStatus = 'L';
+else if AccountStatus = 'Final' then AccountStatus = 'F';
+if AccountStatus = 'L' or  AccountStatus = 'F'
+then output z4;
+run;
+
+
+/*remove historic finalled accounts*/
+data z5 z6 (drop=SupplyEndDate);
+set z4;
+if SupplyEndDate <= "&rundate_final."d and SupplyEndDate > 0
+then output z5;
+else output z6;
+run;
+
+/*remove non-debt finalled accounts*/
+data z7 z8;
+set z6;
+if AccountStatus = 'F' and TotalAmountOutstanding =< 0
+then output z7;
+else output z8;
+run;
+
+/*add complaints data*/
+PROC SQL;
+CREATE TABLE z9 AS
+SELECT t1.*,
+t2.AccountID AS AccountID1,
+t2.Complaint_Opened,
+t2.Complaint_Closed
+FROM z8 t1
+LEFT JOIN shemarr.BGL_COMPLAINTS_&filemonth. t2 ON (t1.Accountid = t2.AccountID);
+QUIT;
+
+data z10;
+set z9;
+if accountid1 > 1 and complaint_closed = '.' then complaint_closed = '31dec9998'd;
+if complaint_closed >= "&rundate_start_comp."d then Complaint = 'Yes';
+run;
+
+data z11;
+set z10;
+drop accountid1 Complaint_Opened Complaint_Closed;
+run;
+
+proc sort data=z11 nodupkey out=z12;
+by accountid;
+quit;
+
+data lml.Z12;
+SET Z12;
+RUN;
+
+data BGB_CREDIT_TO_CRA_SAP;
+set LML.q1 LML.z12;
+run;
+
+
+/*check addresss for these 2 accounts before running this step*/
+/**/
+/*proc sql;*/
+/**/
+/*create table address_cheked2 as select * from  BGB_CREDIT_TO_CRA_SAP*/
+/*where  accountid IN */
+/*           (*/
+/*           601496588,*/
+/*           601496621*/
+/*           );*/
+/*QUIT;*/
+	
+/*Dataset is copied into 2 areas the Riskdata with the date stamp and another copy for the export to Experian*/
+
+data riskdata.BGB_CREDIT_TO_CRA_SAP riskdata.BGB_CREDIT_TO_CRA_SAP_&filemonth.;
+format accountid z9.;
+set Q1 z12;
+run;
+
+
+/*Export of file to location in txt format ready for Experian*/
+
+	%LET emftpname = sasrat10vfs;
+	%getemftppw;                                                             
+	%let wrk    =%sysfunc(getoption(work));
+	%let CMD_File =ftpcmd.cmd;
+	%let EMFTdir  = \Customer_Operations\Credit_Risk\Credit_Management\~Credit_Risk_Insight\~~Data_Systems\Reporting\Monthly\BGB Experian monthly file\5. Raw Data;
+	%let fname=8250s.txt;
+	%let host=emft-vfs;
+	 
+	proc export data=riskdata.BGB_CREDIT_TO_CRA_SAP_&filemonth.
+	outfile ="&wrk/&fname" dbms=tab   replace;
+	run ;
+
+	filename FTP_CMDS "&wrk./&CMD_File";   
+	data _null_;
+	   file FTP_CMDS pad lrecl=300;
+	   put "user &emftpname. &emftppwd.";  
+	   put "cd ""&EMFTdir""";          
+	   put "put ""&fname.""";          
+	   run;
+
+	filename ftptsfr pipe "cd &wrk.;/usr/bin/ftp -n &host < &wrk./&CMD_File";
+	data _null_;
+	infile ftptsfr;
+	input;
+	put _infile_;
+	run;
+
+	x "rm &wrk./&CMD_File";
+
+
+
+
+
+	
+
+/*Email Stakeholders with volumes*/
+/**/
+/*EMAIL 1*/
+
+      filename temp email to= ("raj.shemar@britishgas.co.uk")
+            subject=" UKB Experian PP Outbound Volumes"
+            type="text/html";
+			
+   ods html body=temp;
+
+   proc print  data=work.breakdown1 noobs ;
+   run;
+
+   ods html close;
+
+
+/*EMAIL 2*/
+
+
+PROC SQL;
+CREATE TABLE setNOTSENT  AS
+SELECT account_no
+		,balance
+		,Amount_1to30
+		,Amount_31to60
+		,Amount_61to90
+		,Amount_91plus
+		,AccountStatus
+		,BillingSystem
+		,Paymentmethod
+		,Segment
+		,ECS
+		,CAIS
+		,NONLTDID
+		,LTDID
+		,CustomerName
+		,CustomerStreet
+		,CustomerTown
+		,CustomerPostCode
+		,CustomerCounty
+		,customertelephone
+		,RenewalDate
+		,Contract_Type
+		,TotalProvision
+		,complaint
+		,TEST
+FROM address_breakdown_1
+WHERE 
+/*test = 'ADDRESS NOT PRESENT (NOT SENT)'(Removed as reporting acounts with name only - 05.12.2018)*/
+	test = 'NAME NOT PRESENT (NOT SENT)'
+	OR test = 'ALL BLANK (NOT SENT)'
+ORDER BY  test
+;QUIT;
+
+/*email records that have not been sent*/
+
+
+      filename temp email to= ( "Raj.Shemar@britishgas.co.uk" "saud.ahmad@britishgas.co.uk" 
+		"Sakshi.gupta@britishgas.co.uk")
+            subject=" Excluded Accounts from PP Outbound file"
+            type="text/html";
+			
+   ods html body=temp;
+
+   proc print  data=work.setNOTSENT  noobs ;
+   run;
+	
+   ods html close;
